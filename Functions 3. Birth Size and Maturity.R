@@ -25,11 +25,27 @@ graphical.packs <-
 pack.list <- c(stats.packs, graphical.packs)
 invisible(lapply(pack.list, require, character.only = TRUE))
 
+#### Predict missing lengths of embryos ####
+### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+pred_embryo.lt <- function(length.x, length.y, data, lt.embryo) {
+  length.x <- substitute(length.x)
+  length.y <- substitute(length.y)
+  
+  temp.dat <- data.frame(x = data[[length.x]],
+                         y = data[[length.y]]) %>% na.omit()
+  
+  m1 <- glm(y ~ x, data = temp.dat)
+  
+  embryo.dat <- data.frame(x = lt.embryo)
+  predict(m1, newdata = embryo.dat)
+}
+
 ## Metropolis-Hastings within Gibbs
 ### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
-get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iterations = 9999, chains = 6) {
+get_x50_MH.Gibbs <- function(x0, x1, acceptance_rate = 0.24, iterations = 50000, chains = 4) {
+  
   
   mlgamma <- function(x) {
     fit <- dglm(
@@ -54,7 +70,7 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
       qnorm(runif(n, p_lower, p_upper), mu, sd)
     }
   
-  get_Metropolis.Hastings_priors <- function(x, y, data) {
+  get_MH.Gibbs_priors <- function(x, y, data) {
     x <- substitute(x)
     y <- substitute(y)
     
@@ -71,7 +87,7 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
     priors <- c(alpha_prior, beta_prior)
     
     lower <- c(-Inf, 0)
-    upper <- c(0, 1)
+    upper <- c(0, Inf)
     
     prior_data.frame <- 
       data.frame(Prior = priors, Lower.lim = lower, Upper.lim = upper)
@@ -104,15 +120,15 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
     return(l)
   }
   
-  get_R_x50 <- function(x50.MetHast_object) {
+  get_R_x50 <- function(x50_MH.Gibbs_object) {
     
-    L <- nrow(x50.MetHast_object %>% filter(chain == 1))
+    L <- nrow(x50_MH.Gibbs_object %>% filter(chain == 1))
     
-    j <- x50.MetHast_object %>% pull(chain) %>% unique() %>% length()
+    j <- x50_MH.Gibbs_object %>% pull(chain) %>% unique() %>% length()
     
     x.j <- 
       foreach(i = icount(j), .combine = rbind) %do% {
-        test.diag <- x50.MetHast_object %>% filter(chain == i)
+        test.diag <- x50_MH.Gibbs_object %>% filter(chain == i)
         
         beta_accepted <- test.diag %>% filter(alpha == 1)
         
@@ -154,12 +170,12 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
     return(r.dat %>% round(4))
   }
   
-  summary_x50.MetHast <- function(x50.MetHast_object) {
+  summary_x50.Gibbs <- function(x50_MH.Gibbs_object) {
     
-    x.trim <- x50.MetHast_object %>% filter(alpha == 1)
+    x.trim <- x50_MH.Gibbs_object %>% filter(alpha == 1)
     
-    data.frame(Mean = apply(x.trim[,2:5], 2, mean),
-               Variance = apply(x.trim[,2:5], 2, var)) %>%
+    data.frame(Mean = apply(x.trim[,3:6], 2, mean),
+               Variance = apply(x.trim[,3:6], 2, var)) %>%
       dplyr::mutate(
         "2.5%" = Mean - sqrt(Variance) * qnorm(0.975),
         "97.5%" = Mean + sqrt(Variance) * qnorm(0.975)
@@ -174,7 +190,7 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
   temp.dat <- rbind(x0.data, x1.data) %>% 
     as.data.frame() %>% na.omit()
   
-  get.priors <- get_Metropolis.Hastings_priors(x, y, temp.dat)
+  get.priors <- get_MH.Gibbs_priors(x, y, temp.dat)
   
   prior <- get.priors[, 1] %>% as.numeric()
   lower <- get.priors[, 2] %>% as.numeric()
@@ -224,7 +240,7 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
       z <- 1
       alpha_track <- NA
       
-      for (i in 1:iterations) {
+      for (i in 1:(iterations - 1)) {
         
         beta_proposed <- rtnorm(2, beta, abs(prior * sigma[i]), lower, upper)
         
@@ -258,7 +274,8 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
       
       x50 <- -sample_beta[, 1] / sample_beta[, 2]
       
-      sample_chain <- data.frame(chain = n, x50, sample_beta, sigma = sigma, alpha = alpha_track)
+      sample_chain <- data.frame(chain = n, iteration = 1:length(x50), x50, 
+                                 sample_beta, sigma = sigma, alpha = alpha_track)
       
       sample_chain[-burn_in, ]
     }
@@ -267,15 +284,26 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
   
   R.vals <- get_R_x50(sim.x50)
   
-  summary <- summary_x50.MetHast(sim.x50)
+  r.t <- R.vals < 1.1
   
-  cat("\n")
+  r.true <- isTRUE(isTRUE(r.t[1] & r.t[2]))
+  
+  summary <- summary_x50.Gibbs(sim.x50)
+  
+  cat("\n\n")
   cat("Summary\n")
   print(summary)
-  cat("\n\n")
-  cat("Gelman-Rubin R\n")
+  cat("\n\n\n")
+  cat("Gelman-Rubin Convergence Diagnostic (R)\n\n")
   print(R.vals)
-  cat("\n\n")
+  cat("\n")
+  cat(" Chains = "); cat(chains); cat("\n")
+  if (r.true == TRUE) {
+    cat(" Convergence Achieved")
+  } else{
+    cat(" No Convergence. Add more chains")
+  }
+  cat("\n\n\n")
   
   return(list(
     "Summary" = summary,
@@ -289,7 +317,7 @@ get_x50_Metropolis.Hastings <- function(x0, x1, acceptance_rate = 0.24, iteratio
 ## Metropolis-Hastings Independence Bootstrap
 ### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-get_x50_bootstrap <- function(x0, x1, x50.MetHast_object,
+get_x50_MH.bootstrap <- function(x0, x1, x50_MH.Gibbs_object,
                               bootstraps = 999, 
                               indep_chains = 9999) {
   
@@ -334,7 +362,7 @@ get_x50_bootstrap <- function(x0, x1, x50.MetHast_object,
   temp.dat <- rbind(x0.data, x1.data) %>% 
     as.data.frame() %>% na.omit()
   
-  x.trim <- x50.MetHast_object[[3]] %>% filter(alpha == 1)
+  x.trim <- x50_MH.Gibbs_object[[3]] %>% filter(alpha == 1)
   
   beta0 <- x.trim %>% pull(beta0)
   
@@ -427,10 +455,10 @@ get_x50_bootstrap <- function(x0, x1, x50.MetHast_object,
   
   summary <- summary_x50.bootstrap(raw.data)
   
-  cat("\n")
+  cat("\n\n")
   cat("Summary\n")
   print(summary)
-  cat("\n\n")
+  cat("\n\n\n")
   
   return(list(Summary = summary,
               "Raw Results" = raw.data))
@@ -438,4 +466,222 @@ get_x50_bootstrap <- function(x0, x1, x50.MetHast_object,
 
 
 
+
+### Maturity Ogives ####
+### ~~~~~~~~~~~~~~~~~ ###
+generate_ogive_data <- function(x, maturity, sex, data, MC_logit_x50.obj) {
+  
+  x <- substitute(x)
+  maturity <- substitute(maturity)
+  sex <- substitute(sex)
+  
+  temp.data <- data.frame(x = data[[x]],
+                         y = data[[maturity]],
+                         Sex = data[[sex]]) %>% 
+    na.omit() %>%
+    dplyr::mutate(
+      Sex = factor(Sex, 
+                   levels = c(1, 0),
+                   labels = c("Females", "Males")))
+  
+  x50.female <- MC_logit_x50.obj$Females$Bootstrap.Chain$x50.Results[3, ]
+  x50.male <- MC_logit_x50.obj$Males$Bootstrap.Chain$x50.Results[3, ]
+  
+  x50_data <- data.frame(
+    Sex = c(1, 0), rbind(x50.female, x50.male)) %>%
+    dplyr::mutate(
+      Sex = factor(Sex, 
+                   levels = c(1, 0),
+                   labels = c("Females", "Males")))
+  
+  beta.female <- MC_logit_x50.obj$Females$Bootstrap.Chain$x50.Results[c('alpha', 'beta'), 'Mean']
+  beta.male <- MC_logit_x50.obj$Males$Bootstrap.Chain$x50.Results[c('alpha', 'beta'), 'Mean']
+  
+  range_x <- rbind(
+    range(temp.data[temp.data$Sex == "Females", "x"]),
+    range(temp.data[temp.data$Sex == "Males", "x"]))
+  
+  female_seq <- seq(range_x[1, 1], range_x[1, 2], by = diff(range_x[1, ]) / 1000) 
+  
+  male_seq <- seq(range_x[2, 1], range_x[2, 2], by = diff(range_x[2, ]) / 1000) 
+  
+  
+  beta.female <- MC_logit_x50.obj$Females$Bootstrap.Chain$Raw.Parameters[, -3] 
+  
+  beta.male <- MC_logit_x50.obj$Males$Bootstrap.Chain$Raw.Parameters[, -3]
+  
+  n <- nrow(beta.female)
+  
+  for (i in 1:n) {
+    
+    temp.beta1 <- beta.female[i, ] %>% as.numeric()
+    temp.beta2 <- beta.male[i, ] %>% as.numeric()
+    
+    temp.pred_fem = 1 / (1 + exp(-cbind(1, female_seq) %*% temp.beta1) )
+    temp.pred_male = 1 / (1 + exp(-cbind(1, male_seq) %*% temp.beta2) )
+    
+    if (i == 1) {
+      pred.fem <- temp.pred_fem
+      pred.male <- temp.pred_male
+    } else {
+      pred.fem <- cbind(pred.fem, temp.pred_fem)
+      pred.male <- cbind(pred.male, temp.pred_male)
+    }
+  }
+  
+  pred.fem <- data.frame(Sex = 1, x = female_seq, fit = rowMeans(pred.fem))
+  pred.male <- data.frame(Sex = 0, x = male_seq, fit = rowMeans(pred.male))
+  
+  
+  pred_data <- rbind(pred.fem, pred.male) %>% as.data.frame() %>%
+    dplyr::mutate(
+      Sex = factor(Sex, 
+                   levels = c(1, 0),
+                   labels = c("Females", "Males")))
+  
+  return(list(fit = pred_data, x50 = x50_data) )
+}
+
+
+##### Gibbsings Posterior plot #####
+## ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ##
+
+plot_MH.Gibbs <- 
+  function(x50_MH.Gibbs_object) {
+    
+    plot.theme <- 
+      theme_bw(base_size = 8) %+replace%
+      theme(
+        plot.background = element_rect(color = NA),
+        legend.background = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text = element_text(color = 'black', size = 10),
+        strip.text = element_text(size = 12, face = "bold"),
+        legend.key.size = unit(2.5,"line"),
+        legend.key = element_blank(),
+        legend.text = element_text(size = 12, face = "bold"),
+        plot.margin = unit(c(10,10,10,10), "pt"),
+        aspect.ratio = 0.5
+      )
+    
+    plot.data <- x50_MH.Gibbs_object$`Raw Results`
+    
+    beta0.dens <- 
+      foreach(n = icount(plot.data %>% pull(chain) %>% unique() %>% max()), 
+              .combine = rbind) %do% {
+                
+                sub.dat <- plot.data %>% filter(chain == n & alpha == 1)
+                
+                beta0.dens <- density(sub.dat %>% pull(beta0))
+                
+                point.beta0 <- data.frame(chain = n, 
+                                          x = beta0.dens$x,
+                                          y = beta0.dens$y)
+              } %>% as.data.frame()
+    
+    beta1.dens <- 
+      foreach(n = icount(plot.data %>% pull(chain) %>% unique() %>% max()), 
+              .combine = rbind) %do% {
+                
+                sub.dat <- plot.data %>% filter(chain == n & alpha == 1)
+                
+                beta1.dens <- density(sub.dat %>% pull(beta1))
+                
+                point.beta1 <- data.frame(chain = n, 
+                                          x = beta1.dens$x,
+                                          y = beta1.dens$y)
+              } %>% as.data.frame()
+    
+    beta0_seq <- 
+      seq(min(plot.data %>% 
+                filter(alpha == 1) %>% 
+                pull(beta0)), 
+          max(plot.data %>% 
+                filter(alpha == 1) %>% 
+                pull(beta0)), 
+          by = 0.01)
+    
+    beta1_seq <- 
+      seq(min(plot.data %>% 
+                filter(alpha == 1) %>% 
+                pull(beta1)), 
+          max(plot.data %>% 
+                filter(alpha == 1) %>% 
+                pull(beta1)), 
+          by = 0.01)
+        
+    gpars.beta0 <- 
+      mlgamma(-(plot.data %>% 
+                  filter(alpha == 1) %>% 
+                  pull(beta0))) %>% 
+      t() %>% as.data.frame()
+    
+    gpars.beta1 <- 
+      mlgamma(plot.data %>% 
+                filter(alpha == 1) %>% 
+                pull(beta1)) %>% 
+      t() %>% as.data.frame()
+    
+    dens.gamma_beta0 <- 
+      data.frame(
+        x = -beta0_seq,
+        y = dgamma(-beta0_seq,
+                   shape = gpars.beta0$shape,
+                   scale = gpars.beta0$scale)) %>%
+      mutate(
+        x = -x
+      )
+    dens.gamma_beta1 <- 
+      data.frame(
+        x = beta1_seq,
+        y = dgamma(beta1_seq,
+                   shape = gpars.beta1$shape,
+                   scale = gpars.beta1$scale))
+    
+    (beta0.dens.plot <-
+        plot.data %>%
+        ggplot() +
+        plot.theme +
+        geom_density(aes(x = beta0, color = as.factor(chain) ),
+                     adjust = 1, linewidth = 0.75) +
+        geom_line(data = dens.gamma_beta0, 
+                  aes(x = x, y = y), linewidth = 0.75) +
+        ggtitle(expression(paste(beta[0], " Density"))) + 
+        scale_color_discrete(guide = "none")
+    )
+    
+    (beta1.dens.plot <-
+        plot.data %>%
+        ggplot() +
+        plot.theme +
+        geom_density(aes(x = beta1, color = as.factor(chain) ), 
+                     adjust = 1, linewidth = 0.75) +
+        geom_line(data = dens.gamma_beta1, 
+                  aes(x = x, y = y), linewidth = 0.75) +
+        ggtitle(expression(paste(beta[1], " Density"))) +
+        scale_color_discrete(guide = "none")
+    )
+    
+    (beta0.track.plot <-
+        plot.data %>%
+        ggplot(aes(y = beta0, x = iteration, color = as.factor(chain) )) +
+        plot.theme +
+        geom_line(linewidth = 0.75) +
+        ggtitle(expression(paste(beta[0], " Trace"))) +
+        scale_color_discrete(guide = "none")
+    )
+    
+    (beta1.track.plot <-
+        plot.data %>%
+        ggplot(aes(y = beta1, x = iteration, color = as.factor(chain) )) +
+        plot.theme +
+        geom_line(linewidth = 0.75) +
+        ggtitle(expression(paste(beta[1], " Trace"))) +
+        scale_color_discrete(guide = "none")
+    )
+    
+    beta0.track.plot + beta0.dens.plot + beta1.track.plot + beta1.dens.plot + plot_layout(ncol = 2) 
+  }
 
